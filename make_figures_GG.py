@@ -52,10 +52,24 @@ sns.set_context('talk')
 
 
 
+if __name__ == "__main__":
 
+    parser = ArgumentParser(description=__doc__, formatter_class=RawDescriptionHelpFormatter)
+
+    parser = ArgumentParser()
+    parser.add_argument("segmentation",     help="/path/to/segmentation/directory/", type=str)
+    parser.add_argument("annotation",       help="/path/to/annotation/directory/",   type=str)
+    parser.add_argument("sample_data",      help="/path/to/csv/",                    type=str)
+    parser.add_argument("output_directory", help="/path/to/ouput/directory/",        type=str)
+    parser.add_argument("brain_ID",         help='CBLK1234_1X',                      type=str)
+    args = parser.parse_args()
+    
+    
+    
+    
 
 # load annotation
-annotation_data = np.load(r"C:\Users\akerm\OneDrive - Nexus365\Postdoc\Tracing_experiments\analysis_test\chat_outputs\annotation\annotation_results.npz",allow_pickle=True)
+annotation_data = np.load(,allow_pickle=True)
 segmentation_data = np.load(r"C:\Users\akerm\OneDrive - Nexus365\Postdoc\Tracing_experiments\analysis_test\chat_outputs\segmentation\segmentation_results.npz",allow_pickle=True)
 
 annotations     = annotation_data["annotations"]

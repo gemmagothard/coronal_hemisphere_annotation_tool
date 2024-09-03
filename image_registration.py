@@ -29,12 +29,13 @@ if __name__ == "__main__":
     parser = ArgumentParser(description=__doc__, formatter_class=RawDescriptionHelpFormatter)
     parser.add_argument("image_directory", help="/path/to/image/directory/", type=str)
     parser.add_argument("output_directory", help="/path/to/output/directory/", type=str)
+    parser.add_argument("brain_ID",         help='CBLK1234_1X',                 type=str)
     parser.add_argument("--slice_thickness", help="Slice thickness in micrometers.", type=float, default=150)
     parser.add_argument("--slice_direction", help="Either rostro-caudal or caudal-rostro.", type=str, default="caudal-rostro")
     args = parser.parse_args()
 
     Model = DSModel("mouse")
-    Model.predict(args.image_directory, ensemble=True, section_numbers=True)
+    Model.predict(os.path.join(args.image_directory,args.brain_ID), ensemble=True, section_numbers=True)
     if args.slice_direction == "caudal-rostro":
         Model.enforce_index_spacing(section_thickness=-args.slice_thickness)
     elif args.slice_direction == "rostro-caudal":
@@ -45,7 +46,7 @@ if __name__ == "__main__":
 
     output_directory = Path(args.output_directory)
     output_directory.mkdir(exist_ok=True)
-    Model.save_predictions(os.path.join(str(output_directory),'deepslice_registration_results'))
+    Model.save_predictions(os.path.join(str(output_directory),str(args.brain_ID + '_deepslice_registration_results')))
 
 
 

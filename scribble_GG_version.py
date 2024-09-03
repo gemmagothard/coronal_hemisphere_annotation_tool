@@ -13,28 +13,29 @@ from skimage.transform import rescale
 
 class Scribbler:
     
-    def __init__(self, im, cells, segment_names=None, title=None):
+    def __init__(self, im, plot_cells1, plot_cells2, segment_names=None, title=None):
         
         self.im = im
         
                 
-        f,ax = plt.subplots(1,1)
-        ax = plt.imshow(im, interpolation='none')
-        plt.axis('off')
-        plt.title(title)
-        plt.show(block=False)
+        # f,ax = plt.subplots(1,1)
+        # ax = plt.imshow(im, interpolation='none')
+        # plt.axis('off')
+        # plt.title(title)
+        # plt.show(block=False)
         
         # create initial plot
         self.figure = plt.figure()
         self.ax = self.figure.add_subplot(111)
         plt.imshow(im, interpolation='none')
         plt.axis([0, im.shape[1], im.shape[0], 0])
-        plt.scatter(cells[:,1],cells[:,0],facecolor='orange',s=im.shape[0]/100)
+        plt.scatter(plot_cells1[:,1],plot_cells1[:,0],facecolor='red',s=1)
+        plt.scatter(plot_cells2[:,1],plot_cells2[:,0],facecolor='orange',s=1)
         plt.axis('off')
         
         
         if title:
-            self.figure.canvas.set_window_title(title)
+            self.figure.canvas.manager.set_window_title(title)
     
         # disable default keybindings
         manager, canvas = self.figure.canvas.manager, self.figure.canvas  
@@ -43,12 +44,13 @@ class Scribbler:
         # callbacks
         self.figure.canvas.mpl_connect('key_press_event', self.on_keypress)
         self.figure.canvas.mpl_connect('motion_notify_event', self.on_mouse_motion)
-        self.figure.canvas.mpl_connect('button_press_event', self.on_mouse_down)
+        self.on_mouse_down_id = self.figure.canvas.mpl_connect('button_press_event', self.on_mouse_down)
         self.figure.canvas.mpl_connect('button_release_event', self.on_mouse_up)
         
+        self.is_connected = True
         
         # brush
-        self.brush_radius = im.shape[0]/25  # TODO: these should be fractions of image size
+        self.brush_radius = im.shape[0]/40  # TODO: these should be fractions of image size
         self.min_radius = 5
         self.radius_increment = 10
         self.brush_color = 'r'
@@ -80,6 +82,7 @@ class Scribbler:
         self.mouse_is_down = True
         if event.inaxes!=self.ax: return
         
+        
         center = event.xdata, event.ydata
         self.add_circle_to_scribble(center)
         self.redraw()
@@ -97,7 +100,7 @@ class Scribbler:
                                                     edgecolor=self.brush_color,
                                                     facecolor='none',
                                                     zorder=1e6)  # always on top
-            self.ax.add_patch(self.brush)
+            #self.ax.add_patch(self.brush)
         self.redraw()
         
         # add to the scribble
@@ -112,8 +115,18 @@ class Scribbler:
             self.enlarge_brush()
         elif event.key in ['-', 'super+-']:
             self.shrink_brush()
-        elif event.key == 'z':
+        elif event.key == 'r':
             self.remove_circle_from_scribble()
+        elif event.key == 'z':
+            if self.is_connected:
+                self.figure.canvas.mpl_disconnect(self.on_mouse_down_id)
+                self.is_connected=False
+                
+            elif not self.is_connected:
+                self.on_mouse_down_id = self.figure.canvas.mpl_connect('button_press_event', self.on_mouse_down)
+                self.is_connected=True
+            
+
 #        elif event.key == 's':
 #            self.save()
         elif event.key in [str(num+1) for num in range(len(self.scribbles))]:

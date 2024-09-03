@@ -67,15 +67,16 @@ def get_aba_image(annotation, cmap):
 if __name__ == "__main__":
 
     parser = ArgumentParser(description=__doc__, formatter_class=RawDescriptionHelpFormatter)
-    parser.add_argument("registration_file", help="/path/to/registration/results.csv",          type=str)
+    parser.add_argument("registration_dir", help="/path/to/registration/",          type=str)
     parser.add_argument("aba_directory",     help="/path/to/Allen/Brain/Atlas/data/directory/", type=str)
     parser.add_argument("output_directory",  help="/path/to/output/directory/",                 type=str)
+    parser.add_argument("brain_ID",          help='CBLK1233_1X',                                type=str)
     args = parser.parse_args()
 
     aba_directory = Path(args.aba_directory)
     aba_directory.mkdir(exist_ok=True)
 
-    output_directory = Path(args.output_directory)
+    output_directory = Path(args.output_directory) / args.brain_ID
     output_directory.mkdir(exist_ok=True)
 
     print("Constructing the ABA annotation volume...")
@@ -89,7 +90,7 @@ if __name__ == "__main__":
     name_map = tree.get_name_map()
 
     print("Computing annotations for each image...")
-    registration = pd.read_csv(args.registration_file)
+    registration = pd.read_csv(os.path.join(args.registration_dir,str(args.brain_ID+'_deepslice_registration_results.csv')))
     aba_annotations = []
     for ii, row in registration.iterrows():
         print(f"{ii + 1} / {len(registration)}")
@@ -111,9 +112,15 @@ if __name__ == "__main__":
     color_map_array = np.c_[list(color_map.keys()), list(color_map.values())]
     name_map_array = np.array(list(name_map.items()), dtype=object)
     np.savez(
-        output_directory / "annotation_results.npz",
+        output_directory / str(args.brain_ID+"_annotation_results.npz"),
         annotations = np.array(aba_annotations),
         images      = np.array(aba_images),
         color_map   = color_map_array,
         name_map    = name_map_array,
     )
+
+
+
+
+
+

@@ -13,6 +13,8 @@ import pickle
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
+import glob
+import json
 
 from argparse import ArgumentParser, RawDescriptionHelpFormatter
 from pathlib import Path
@@ -23,6 +25,8 @@ from shapely.geometry import Polygon, LineString
 from shapely.ops import polylabel
 from itertools import combinations
 from scipy.optimize import minimize, NonlinearConstraint
+from allensdk.core.reference_space_cache import ReferenceSpaceCache
+from collections import Counter
 
 
 def get_well_spaced_angles(angles, minimum_delta_angle=np.pi/9):
@@ -48,6 +52,9 @@ def get_well_spaced_vectors(vectors, minimum_delta_angle=2*np.pi/36):
     return np.c_[np.cos(angles), np.sin(angles)]
 
 
+
+
+
 if __name__ == "__main__":
 
     parser = ArgumentParser(description=__doc__, formatter_class=RawDescriptionHelpFormatter)
@@ -55,28 +62,110 @@ if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("segmentation",     help="/path/to/segmentation/directory/", type=str)
     parser.add_argument("annotation",       help="/path/to/annotation/directory/",   type=str)
-    parser.add_argument("sample_data",      help="/path/to/sample_data.csv",         type=str)
+    parser.add_argument("sample_data",      help="/path/to/csv/",                    type=str)
     parser.add_argument("output_directory", help="/path/to/ouput/directory/",        type=str)
+    parser.add_argument('allen_brain_path', help='/path/to/allen_brain/folder/',  type=str)
+    parser.add_argument("brain_ID",         help='CBLK1234_1X',                      type=str)
     args = parser.parse_args()
 
-    output_directory = Path(args.output_directory)
+    output_directory = Path(args.output_directory) / args.brain_ID
     output_directory.mkdir(exist_ok=True)
 
     # load segmentation
-    segmentation_directory = Path(args.segmentation)
+    segmentation_directory = Path(args.segmentation) / args.brain_ID
     data = np.load(segmentation_directory / "segmentation_results.npz")
     slice_images  = data["slice_images"]
     slice_masks   = data["slice_masks"]
     sample_masks  = data["sample_masks"]
     slice_numbers = data["slice_numbers"]
 
-    df = pd.read_csv(args.sample_data)
+    csv_path = glob.glob(str(args.sample_data + args.brain_ID + '*.csv'))[0]
+    df = pd.read_csv(csv_path)
 
     # load annotation
-    data = np.load(Path(args.annotation) / "annotation_results.npz", allow_pickle=True)
+    data = np.load(Path(args.annotation) / args.brain_ID / str(args.brain_ID + "_annotation_results.npz"), allow_pickle=True)
     annotations     = data["annotations"]
     color_map_array = data["color_map"]
     name_map_array  = data["name_map"]
+    
+    
+    # Load ABA reference.
+    rspc = ReferenceSpaceCache(
+        resolution=25,
+        reference_space_key='annotation/ccf_2017',
+        manifest=Path(args.allen_brain_path) / 'manifest.json')
+    tree = rspc.get_structure_tree(structure_graph_id=1) # ID 1 is the adult mouse structure graph
+    
+    # Convert annotation name to the ABA annotation ID
+    aba_id_to_name = tree.get_name_map()
+    aba_name_to_id = {aba_name : aba_id for aba_id, aba_name in sorted(aba_id_to_name.items())}
+    df["annotation_id"] = df["annotation_name"].apply(lambda x: aba_name_to_id[x])
+    
+    print(df[df['annotation_id']==709])
+    
+
+    # Coarse-grain region assignment
+    ancestor_id_map = tree.get_ancestor_id_map()
+    with open(Path(args.allen_brain_path) / 'aba_parcellation.json' ) as f:
+        parcellation = json.load(f)
+        
+    parcellation.update({'fiber tracts':1009,
+                         'Olfactory areas': 698,
+                         'Brain stem': 343  ,
+                         'ventricular systems': 73,
+                         'root':997,})
+
+    def get_ancestor(aba_id):
+        for target_id in parcellation.values():
+            if target_id in ancestor_id_map[aba_id]:
+                return target_id
+        else:
+            raise ValueError(f"No target ABA ID specified for {aba_id_to_name[aba_id]} : {aba_id}!")
+
+    df["simplified_annotation_id"] = df["annotation_id"].apply(get_ancestor)
+    df["simplified_annotation_name"] = df["simplified_annotation_id"].apply(lambda x : aba_id_to_name[x])
+    
+    print(df[df['annotation_name']=='root'])
+
+    # --------------------------------------------------------------------------------
+    
+    # plot overall histogram for each brain
+    for ii in np.unique(df.brain_ID):
+        
+        this_brain = df[df.brain_ID==ii]
+        
+        these_input_cells_left = this_brain[np.logical_and(this_brain.cell_idx=='input',df['filename'].str.contains('left'))]
+        these_input_cells_right = this_brain[np.logical_and(this_brain.cell_idx=='input',df['filename'].str.contains('right'))]
+        
+        these_starter_cells = this_brain[this_brain.cell_idx=='starter']  # these will only be on the left hemisphere anyway
+        
+        
+        fig,ax = plt.subplots(1,1,sharex=True,sharey=True)
+        
+        counts_input_left = Counter(these_input_cells_left.simplified_annotation_name.values)
+        df1 = pd.DataFrame.from_dict(counts_input_left, orient='index',columns=['Ipsilateral inputs'])
+        
+        counts_input_right = Counter(these_input_cells_right.simplified_annotation_name.values)
+        df2 = pd.DataFrame.from_dict(counts_input_right, orient='index',columns=['Contralateral inputs'])
+        
+        counts_starter = Counter(these_starter_cells.simplified_annotation_name.values)
+        df3 = pd.DataFrame.from_dict(counts_starter, orient='index',columns=['Starters cells'])
+        
+        appended_df = df1.join([df2,df3]).sort_values(by=['Ipsilateral inputs'])
+        
+        print(appended_df)
+        
+        appended_df.plot(kind='barh',ax=ax,color=['red','green','blue'])
+
+        ax.set_xlabel("Cell counts")
+        
+        plt.tight_layout()
+        ax.set_title(args.brain_ID)
+        plt.show()
+        fig.savefig(output_directory / str(args.brain_ID + '_histogram.svg'),bbox_inches='tight')
+        
+        appended_df.to_csv(output_directory / str(args.brain_ID + '_histogram.csv'))
+        
 
     color_map = dict(zip(color_map_array[:, 0], color_map_array[:, 1:]))
     name_map = dict(name_map_array)
@@ -110,7 +199,8 @@ if __name__ == "__main__":
             axes[0].imshow(slice_image, cmap="gray")
 
             # plot slice contour
-            contours = find_contours(slice_mask, 0.5)
+            contours = find_contours(slice_mask)
+
             for contour in contours:
                 x = contour[:, 1]
                 y = contour[:, 0]
@@ -124,7 +214,7 @@ if __name__ == "__main__":
             for annotation_id in np.unique(annotation):
                 if annotation_id > 0: # 0 is background
                     region_mask = annotation == annotation_id
-                    for contour in find_contours(region_mask, 0.5):
+                    for contour in find_contours(region_mask):
                         x = contour[:, 1]
                         y = contour[:, 0]
                         axes[-1].plot(x, y, color=to_hex(color_map[annotation_id]/255), linewidth=0.25)
@@ -145,29 +235,15 @@ if __name__ == "__main__":
                 for _, row in subset.iterrows():
                     x = row["segmentation_col"]
                     y = row["segmentation_row"]
-                    axes[-1].plot(x, y, linestyle="", marker='o', markersize=1, color='red')
-
-                # annotate samples; prevent labels from overlapping - barcode labelling
-                #labels = subset["barcode"]
-                # indices = subset.index.values
-                # center = np.array([xc, yc])
-                # coordinates = subset[["segmentation_col", "segmentation_row"]].values
-                # vectors = coordinates - center[np.newaxis, :]
-                # vectors = vectors / np.linalg.norm(vectors, axis=1)[:, np.newaxis]
-                # if len(vectors) > 1:
-                #     vectors = get_well_spaced_vectors(vectors)
-                # for xy, vector, idx in zip(coordinates, vectors, indices):
-                #     line = LineString([center, center + 1.1 * slice_radius * vector])
-                #     intersection = np.array(slice_contour.intersection(line).coords[:][-1])
-                #     axes[-1].annotate(
-                #         f"({idx})",
-                #         xy,
-                #         center + 1.1 * (intersection - center),
-                #         ha="right", va="bottom",
-                #         fontsize=5,
-                #         arrowprops=dict(arrowstyle="-", color="#677e8c", linewidth=0.25),
-                #         wrap=True,
-                #     )
+                    
+                    if row['cell_idx'] == 'input':
+                        axes[-1].plot(x, y, linestyle="", marker='o', markersize=1, color='red')
+                        
+                    if row['cell_idx'] == 'starter':
+                        axes[-1].plot(x, y, linestyle="", marker='o', markersize=1, color='blue')
+                        
+                    if row['annotation_name']=='root':
+                        axes[-1].plot(x, y, linestyle="", marker='o', markersize=1, color='green')
 
                 # plot regions that have a sample in them
                 region_coordinates = []
@@ -176,37 +252,22 @@ if __name__ == "__main__":
                 for annotation_id in np.unique(subset["annotation_id"]):
                     region_mask = annotation == annotation_id
                     region_mask[:, :int(xc) + 1] = False
-                    contours = find_contours(region_mask, 0.5)
+                    
+                    contours = find_contours(region_mask)
+                    
                     # The contour finding algorithm sometimes identifies
                     # spurious contours around the corners of the region.
                     # We hence only plot the largest contour.
-                    contour = sorted(contours, key = lambda x : len(x))[-1]
-                    patch = plt.Polygon(np.c_[contour[:, 1], contour[:, 0]], color=to_hex(color_map[annotation_id]/255))
-                    axes[-1].add_patch(patch)
-                    polygon = Polygon(np.c_[contour[:, 1], contour[:, 0]])
-                    poi = polylabel(polygon, tolerance=0.1)
-                    x, y = poi.x, poi.y
-                    region_coordinates.append((x, y))
-                    region_labels.append(name_map[int(annotation_id)])
+                    if len(contours)>0:
+                        contour = sorted(contours, key = lambda x : len(x))[-1]
+                        patch = plt.Polygon(np.c_[contour[:, 1], contour[:, 0]], color=to_hex(color_map[annotation_id]/255))
+                        axes[-1].add_patch(patch)
+                        polygon = Polygon(np.c_[contour[:, 1], contour[:, 0]])
+                        poi = polylabel(polygon, tolerance=0.1)
+                        x, y = poi.x, poi.y
+                        region_coordinates.append((x, y))
+                        region_labels.append(name_map[int(annotation_id)])
                 
-                # annotate regions
-                # region_coordinates = np.array(region_coordinates)
-                # vectors = region_coordinates - center[np.newaxis, :]
-                # vectors = vectors / np.linalg.norm(vectors, axis=1)[:, np.newaxis]
-                # if len(vectors) > 1:
-                #     vectors = get_well_spaced_vectors(vectors)
-                # for xy, vector, label in zip(region_coordinates, vectors, region_labels):
-                #     line = LineString([center, center + 1.1 * slice_radius * vector])
-                #     intersection = np.array(slice_contour.intersection(line).coords[:][-1])
-                #     axes[-1].annotate(
-                #         label,
-                #         xy,
-                #         center + 1.1 * (intersection - center),
-                #         ha="left", va="bottom",
-                #         fontsize=5,
-                #         arrowprops=dict(arrowstyle="-", color="#677e8c", linewidth=0.25),
-                #         wrap=True,
-                #     )
                     
             fig.savefig(output_directory / f"slice_{slice_number:03d}.svg")
             pdf.savefig(fig)
@@ -249,7 +310,11 @@ if __name__ == "__main__":
             x = row["segmentation_col"]
             y = row["segmentation_row"]
             xyz = np.array([-slice_number, x, -y])
-            ax.plot(*xyz, linestyle="", marker='o', color='blue')
+            
+            if row['cell_idx'] == 'input':
+                ax.plot(*xyz, linestyle="", marker='.',markersize=1, color='red')
+            if row['cell_idx'] == 'starter':
+                ax.plot(*xyz, linestyle="", marker='.',markersize=1, color='blue')
 
     # # label clones
     # for barcode in np.unique(df["barcode"]):
@@ -269,3 +334,11 @@ if __name__ == "__main__":
     plt.show()
     fig.savefig(output_directory / "reconstruction_in_3d.pdf")
     fig.savefig(output_directory / "reconstruction_in_3d.svg")
+    
+    
+    
+    
+    
+    
+    
+    

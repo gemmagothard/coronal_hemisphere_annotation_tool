@@ -8,20 +8,18 @@ Created on Thu Jun 20 12:37:46 2024
 overall folder structure for analysis:
     
   - raw
-        - brain_ID (CBLK1234.1a_left) - saved images straight from Odyssey
-          - saved_image.tif
+        - brain_ID (CBLK1234.1a_left) - saved images straight from Odyssey in nested folders
   - processed
         - Images 
           - Brain_ID (CBLK1234.1a_left)
               - brain_ID.tif (CBLK1234.1a_left_X_) - where this processing script will save them, each hemisphere will be one image, X is the slice number
         - CSVs
             - brain_ID.csv (CBLK1234.1a_left) - one CSV per brain
-  - chat_outputs
-          - segmentation
-          - annotation
-          - registration
-          - allen_data
-          - figures
+  - segmentation
+  - annotation
+  - registration
+  - allen_brain_data
+  - figures
 
 
 This script will:
@@ -42,7 +40,12 @@ import pandas as pd
 import os
 import scipy.ndimage as ndimage  
 import openpyxl 
+import glob
+import re
 
+from statistics import mode
+from itertools import compress
+from pathlib import Path
 from scipy.spatial import KDTree 
 from skimage import measure
 from matplotlib.widgets import RectangleSelector
@@ -177,6 +180,7 @@ if __name__ == "__main__":
     parser.add_argument("raw_image_directory",                  help="/path/to/raw/image/directory",   type=str)
     parser.add_argument("image_output_directory",               help="/path/to/image/output/directory", type=str)
     parser.add_argument('excel_metadata_spreadsheet',           help='/path/to/excel/spreadhsheet.xsls', type=str)
+    parser.add_argument('brain_ID',                             help='CBLK1234_1X',                       type=str)
     args = parser.parse_args()
 
 
@@ -184,38 +188,67 @@ if __name__ == "__main__":
     excel_path = args.excel_metadata_spreadsheet
     wb = openpyxl.load_workbook(excel_path)
     slice_info = wb['slice_info']
-    slice_info_df = pd.DataFrame(slice_info.values,columns=['Folder','Odyssey_file_name','Slice_sampling','Slices_omitted'])
+    slice_info_df = pd.DataFrame(slice_info.values,columns=['Folder','Odyssey_file_name','Slice_sampling','Slices_omitted','Channel','Hemisphere','Slices_in_this_image','Threshold'])
 
-    
     flip_image_info = wb['flip_image_info']
     
+
     print('loading images')
-    brain_ID = os.path.basename(args.raw_image_directory)
-    list_of_tif_files = [file for file in os.listdir(args.raw_image_directory) if file.endswith('.TIF')]
+    # get data from each filename
+    brain_directory = Path(args.raw_image_directory) / args.brain_ID
+
+    # find all tif files below root directory
+    tif_filepaths = [Path(f) for f in glob.glob(str(brain_directory / '*/*.TIF'))]
+    tif_filenames = [f.name for f in tif_filepaths]
     
-    filepaths = [os.path.join(args.raw_image_directory,file) for file in list_of_tif_files]
-    order = np.argsort(filepaths)
-    file_numbers = [filepaths[ii] for ii in order]
-    filepaths = [filepaths[ii] for ii in order]
     
+    order = np.argsort(tif_filenames)
+    filenames_sorted = [tif_filenames[ii] for ii in order]
+    filepaths_sorted = [tif_filepaths[ii] for ii in order]
+    
+    
+    # use regular expression to search for the excitation wavelength
+    pattern = r'^([0-9]*_[0-9]*)_([0-9]*)([A-z]*)-([0-9]*[A-z]*)'
+    filename_ids = [int(re.search(pattern,x).group(1)) for x in filenames_sorted]
+    excitation_ids = [int(re.search(pattern,x).group(2)) for x in filenames_sorted]
+
+    unique_filenames = np.unique(filename_ids)
     
     print('segmenting images')
-    slice_counter = 1
-    for ii,(tif_filename, filepath) in enumerate(zip(list_of_tif_files, filepaths)):
-        print(tif_filename)
-        image = skimage.io.imread(filepath)
-        exposure_adjust = skimage.exposure.adjust_log( image_uint8(image), gain=1, inv=False)
+    slice_counter_left = 1
+    slice_counter_right = 1
+    for file_id in unique_filenames:
+
+        file_bool = filename_ids==file_id
         
-        # slice_info.append({'A':brain_ID,
-        #                    'B': tif_filename})
-        # wb.save(excel_path)
+        # get the relevant filepaths and filenames
+        filenames = list(compress(filenames_sorted,file_bool))
+        filepaths = list(compress(filepaths_sorted,file_bool))
+        exc_wl    = list(compress(excitation_ids,file_bool))
+        
+        print(filenames)
+
+        for filen, filep in zip(filenames,filepaths):
+            if int(re.search(pattern,filen).group(2))==520:
+                TdTom_image = skimage.io.imread(filep)
+                TdTom_image = image_uint8(TdTom_image)
+            if int(re.search(pattern,filen).group(2))==488:
+                GFP_image = skimage.io.imread(filep)
+                GFP_image = image_uint8(GFP_image)
+        
+        
+        # above_background_mask = TdTom_image>mode(TdTom_image.flatten())
+        # mode_tdtom = mode(TdTom_image[above_background_mask])
+        # mode_gfp = mode(GFP_image[above_background_mask])
+       
+        exposure_adjust = skimage.exposure.adjust_log(TdTom_image, gain=6, inv=False)
         
         bounding_boxes = []
         fig,ax = plt.subplots(1,figsize=(10,8))
 
         selectors = []
         ax.imshow(exposure_adjust)  # plot something
-        ax.set_title("Click and drag to draw a rectangle.")
+        ax.set_title(file_id)
         selectors.append(RectangleSelector(
             ax, select_callback,
             useblit=True,
@@ -228,40 +261,60 @@ if __name__ == "__main__":
         plt.show()
         
         # what is the slice sampling frequency of the current slide?
-        slice_sampling_info = slice_info_df[slice_info_df.Odyssey_file_name==tif_filename].Slice_sampling.values[0]
+        slice_sampling_info = slice_info_df[slice_info_df.Odyssey_file_name==filenames[0]].Slice_sampling.values[0]
+        hemisphere = slice_info_df[slice_info_df.Odyssey_file_name==filenames[0]].Hemisphere.values[0]
         
+        slices_in_image_left = []
+        slices_in_image_right = []
         for c,b in enumerate(bounding_boxes):
             
             x1, x2, y1, y2 = [int(np.ceil(x)) for x in b]
             
-            this_brain = image[y1:y2,x1:x2]
-            
-            #this_brain = pad_to_square(this_brain)
-            #plt.imshow(image_uint8(this_brain))
-            #plt.show()
-            # print('flip so midline is on right side?')
-            # if input().lower() == 'y': # paul's registration only works when midline is on right
-            #     this_brain = np.flip(this_brain,1)
-            #     print('flipping brain')
+            this_TdTom_brain = TdTom_image[y1:y2,x1:x2]
+            this_GFP_brain = GFP_image[y1:y2,x1:x2]
                 
 
-            # save as tiff file
-            save_filename = str(brain_ID + '_{}_.tif').format(slice_counter)
+            # save file and increment slice counter by one multiplied by slice sampling frequency
+            if hemisphere=='left':
+                TdTom_save_filename = str(args.brain_ID + '_s{}_' + hemisphere + '_c520_.tif').format(slice_counter_left)
+                GFP_save_filename = str(args.brain_ID + '_s{}_' + hemisphere + '_c488_.tif').format(slice_counter_left)
+                slices_in_image_left.append(slice_counter_left)
+                
+                slice_counter_left += 1*slice_sampling_info
+                
+                
+            if hemisphere=='right':
+                TdTom_save_filename = str(args.brain_ID + '_s{}_' + hemisphere + '_c520_.tif').format(slice_counter_right)
+                GFP_save_filename = str(args.brain_ID + '_s{}_' + hemisphere + '_c488_.tif').format(slice_counter_right)
+                slices_in_image_right.append(slice_counter_right)
+                
+                slice_counter_right += 1*slice_sampling_info
+                
+                
             
             # if the directory does not already exist, create it
-            image_save_dir = os.path.join(args.image_output_directory,brain_ID)
+            image_save_dir = os.path.join(args.image_output_directory,args.brain_ID)
             if not os.path.isdir(image_save_dir):
                 os.makedirs(image_save_dir)
-            skimage.io.imsave(os.path.join(image_save_dir,save_filename),image_uint8(this_brain))
+                
+            skimage.io.imsave(os.path.join(image_save_dir,TdTom_save_filename),image_uint8(this_TdTom_brain))
+            skimage.io.imsave(os.path.join(image_save_dir,GFP_save_filename),image_uint8(this_GFP_brain))
+
             
-            # increment slice counter by one multiplied by slice sampling frequency
-            slice_counter += 1*slice_sampling_info
             
-            
-            flip_image_info.append({'A':brain_ID,
-                                    'B': save_filename})
+            flip_image_info.append({'A':args.brain_ID,
+                                    'B':TdTom_save_filename,
+                                    #'E':mode_gfp
+                                    })
         
             wb.save(excel_path)
+            
+        for row in slice_info.iter_rows():
+            if row[1].value==filenames[0]:
+                row[6].value = str(slices_in_image_left)
+                
+        wb.save(excel_path)
+                
             
             
             

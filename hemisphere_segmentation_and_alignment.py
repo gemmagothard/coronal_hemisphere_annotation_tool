@@ -44,7 +44,11 @@ import os
 import numpy as np
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+
 import pandas as pd
+import cv2
+import re
+import skimage
 
 from pathlib import Path
 from time import sleep
@@ -61,6 +65,7 @@ from skimage.morphology import (
     disk,
 )
 from skimage.measure import label, find_contours
+from statistics import mode
 
 
 def equalize(img):
@@ -75,8 +80,8 @@ def equalize(img):
 
 def select_midline(img, with_refinement=True):
     fig, ax = plt.subplots(figsize=(5, 5))
-    fig.suptitle("Select the ventral and dorsal endpoints of the midline.")
-    ax.imshow(img, cmap='gray')
+    fig.suptitle("Select the ventral (bottom) THEN dorsal (top) endpoints of the midline.")
+    ax.imshow(skimage.exposure.adjust_log(img, gain=1, inv=False), cmap='gray')
     midline = np.array(ginput(fig, 2, blit=True))
 
     if with_refinement:
@@ -230,7 +235,7 @@ def ginput(figure, n=1, timeout=-1, show_clicks=True,
                 #           len(clicks), event.xdata, event.ydata)
                 if show_clicks:
                     line = mpl.lines.Line2D([event.xdata], [event.ydata],
-                                            marker="+", color="r", animated=blit)
+                                            marker="+", color="r", markersize=20, animated=blit)
                     event.inaxes.add_line(line)
                     marks.append(line)
 
@@ -240,11 +245,12 @@ def ginput(figure, n=1, timeout=-1, show_clicks=True,
                             event.inaxes.draw_artist(line)
                         figure.canvas.blit(figure.bbox)
                         figure.canvas.flush_events()
+                    
                     else:
                         figure.canvas.draw()
 
         if len(clicks) == n and n > 0:
-            sleep(0.5)
+            sleep(1)
             figure.canvas.stop_event_loop()
 
     blocking_input_loop(
@@ -283,7 +289,9 @@ def segment(image, show=False):
 def get_mask(rotated, show=False):
     # binarize
     smoothed = anisodiff(rotated, niter=30, gamma=0.25, option=1)
-    binary = smoothed > threshold(smoothed,nbins=200)
+    binary = smoothed > np.percentile(smoothed.flatten(),40)
+    
+    #binary = smoothed > threshold(smoothed,nbins=200)
 
     # clean up small imperfections
     cleaned = remove_small_objects(binary, 1000)
@@ -438,13 +446,13 @@ def anisodiff(img, niter=1, kappa=50, gamma=0.1, step=(1.,1.), option=1, show=Fa
 
 
 def trim_excess(img, mask, pad=100):
-    # rows, columns = np.where(mask)
-    # row_min = max(np.min(rows) - pad, 0)
-    # row_max = min(np.max(rows) + pad, img.shape[0])
-    # column_min = max(np.min(columns) - pad, 0)
-    # column_max = min(np.max(columns) + pad, img.shape[1])
-    # mask = mask[row_min:row_max, column_min:column_max]
-    # img = img[row_min:row_max, column_min:column_max]
+    rows, columns = np.where(mask)
+    row_min = max(np.min(rows) - pad, 0)
+    row_max = min(np.max(rows) + pad, img.shape[0])
+    column_min = max(np.min(columns) - pad, 0)
+    column_max = min(np.max(columns) + pad, img.shape[1])
+    mask = mask[row_min:row_max, column_min:column_max]
+    img = img[row_min:row_max, column_min:column_max]
     return img, mask
 
 
@@ -467,6 +475,56 @@ def rotate_points(p, origin=(0, 0), degrees=0):
     return np.squeeze((R @ (p.T-o.T) + o.T).T)
 
 
+def rotate_image_and_coords(image, angle, center=None,  coords=None):
+    """
+    Rotate an image and a set of coordinates by a given angle.
+
+    Parameters:
+    - image: Input image (numpy array).
+    - coords: List or array of (x, y) tuples representing the coordinates.
+    - angle: The rotation angle in degrees.
+    - center: The center of rotation. If None, the image center is used.
+
+    Returns:
+    - rotated_image: The rotated image.
+    - rotated_coords: The rotated coordinates.
+    """
+    
+    # Get image dimensions
+    h, w = image.shape[:2]
+
+    # Define the center of rotation
+    if center is None:
+        center = (w // 2, h // 2)
+
+    # Calculate the rotation matrix
+    rotation_matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+
+    # Perform the rotation on the image
+    rotated_image = cv2.warpAffine(image, rotation_matrix, (w, h))
+
+    if coords is None:
+        rotated_coords = []
+    else:
+        
+        # Rotate the coordinates
+        rotated_coords = []
+        for (x, y) in coords:
+            # Convert coordinates to homogenous coordinates (x, y, 1)
+            coord = np.array([x, y, 1])
+            # Apply the rotation matrix
+            rotated_coord = rotation_matrix.dot(coord)
+            # Store the rotated coordinates
+            rotated_coords.append((int(rotated_coord[0]), int(rotated_coord[1])))
+
+    
+    return rotated_image, rotated_coords
+
+
+
+
+
+
 def segment_coronal_slice_hemisphere(img, midline, sample_ids=None, sample_coordinates=None, show=False):
     # improve contrast
     equalized = equalize(np.array(img))
@@ -486,19 +544,14 @@ def segment_coronal_slice_hemisphere(img, midline, sample_ids=None, sample_coord
     equalized += midpoint_mask
 
     
-    rotated = rotate(equalized, 90-angle, resize=False, center=midpoint[::-1], preserve_range=True)
+    #rotated = rotate(equalized, 90-angle, resize=False, center=midpoint[::-1], preserve_range=True)
+    rotated, _ = rotate_image_and_coords(equalized, 90-angle, center=tuple(midpoint))
 
     # remove everything right of the midline
     single_hemisphere = rotated[:, :int(np.ceil(midpoint[0]))].copy()
-    
-    plt.imshow(single_hemisphere)
-    plt.scatter(midpoint[0],midpoint[1],s=20,color='red')
-    plt.show()
-    #plt.pause(10)
-
 
     # isolate slice from background
-    segmented, mask = segment(single_hemisphere, shocw=show)
+    segmented, mask = segment(single_hemisphere, show=show)
 
     # crop
     trimmed_segmented, trimmed_mask = trim_excess(segmented, mask, pad=100)
@@ -510,7 +563,7 @@ def segment_coronal_slice_hemisphere(img, midline, sample_ids=None, sample_coord
         fig, axes = plt.subplots(1, 2, figsize=(15, 8))
         axes[0].imshow(mirrored_image, cmap="gray")
         axes[0].axis("off")
-        for contour in find_contours(mirrored_mask, 0.5):
+        for contour in find_contours(mirrored_mask, 0.2):
             axes[1].plot(contour[:, 1], contour[:, 0], "#677e8c")
         xmax, xmin, ymin, ymax = axes[0].axis() # due to imshow
         axes[1].axis((xmin, xmax, ymin, ymax))
@@ -526,7 +579,10 @@ def segment_coronal_slice_hemisphere(img, midline, sample_ids=None, sample_coord
 
         # Unfortunately, image rotation doesn't work for our purpose as the rotation "smears" pixel intensities and thus destroys the sample identity.
         # rotated_sample_mask = rotate(sample_mask, 90-angle, resize=False, center=midpoint, preserve_range=True)
-        rotated_rows, rotated_cols = rotate_points(np.c_[rows, cols], origin=midpoint, degrees=90-angle).T
+        _, rotated_coords = rotate_image_and_coords(equalized, 90-angle, center=tuple(midpoint), coords = list(zip(cols,rows)))
+        rotated_cols, rotated_rows = list(map(list, zip(*rotated_coords)))
+        
+        #rotated_cols, rotated_rows = rotate_points(np.c_[cols, rows], origin=midpoint, degrees=90-angle).T
         rotated_sample_mask = np.full_like(rotated, np.nan)
         rotated_sample_mask[np.round(rotated_rows).astype(int), np.round(rotated_cols).astype(int)] = sample_ids
 
@@ -570,25 +626,39 @@ if __name__ == "__main__":
     parser.add_argument("image_directory",             help="/path/to/image/directory/",  type=str)
     parser.add_argument("sample_data",                 help="/path/to/sample_data.csv",   type=str)
     parser.add_argument("output_directory",            help="/path/to/output/directory/", type=str)
+    parser.add_argument("brain_ID",                    help='CBLK1234_1X',                type=str)
     parser.add_argument("--midlines",                  help="/path/to/midlines.npy",      type=str, default=None)
     parser.add_argument("--show", action="store_true", help="Display figures.")
     args = parser.parse_args()
 
     # create output directory
-    output_directory = Path(args.output_directory)
+    output_directory = Path(args.output_directory) / args.brain_ID
     output_directory.mkdir(exist_ok=True)
     
-    brain_ID = os.path.basename(args.image_directory)
+    print(args.brain_ID)
+    
+    brain_directory = Path(args.image_directory) / args.brain_ID
 
     # glob image file path and order by slice number
-    filepaths = [Path(path) for path in glob.glob(args.image_directory + "\\*.tif")]
-    slice_numbers = [next(int(substring) for substring in path.stem.split("_") if substring.isdigit()) for path in filepaths]
+    filepaths = [Path(path) for path in glob.glob(str(Path(brain_directory) / "*.tif"))]
+    tif_filenames = [f.name for f in filepaths]
+    
+    pattern = r'([A-z]*[0-9]*_[0-9]*[A-z]*_[A-z]*)([0-9]*)_[A-z]*_[A-z]*([0-9]*)_'
+    slice_numbers = [int(re.search(pattern,x)[2]) for x in tif_filenames]
+    image_wavelengths = [int(re.search(pattern,x)[3]) for x in tif_filenames]
+    select_tdtomato = [x==520 for x in image_wavelengths]
+
+    filepaths = [x for x,t in zip(filepaths,select_tdtomato) if t]
+    slice_numbers = [x for x,t in zip(slice_numbers,select_tdtomato) if t]
+    
+    #slice_numbers = [next(int(substring) for substring in path.stem.split("_") if substring.isdigit()) for path in filepaths]
     order = np.argsort(slice_numbers)
     slice_numbers = [slice_numbers[ii] for ii in order]
     filepaths = [filepaths[ii] for ii in order]
 
     # load coordinates
-    sample_data = pd.read_csv(args.sample_data, index_col="sample_id")
+    csv_directory = Path(args.sample_data) / str(args.brain_ID+'.csv')
+    sample_data = pd.read_csv(str(Path(csv_directory)), index_col="sample_id")
 
     if args.midlines is None:
         print("Selecting midlines...")
@@ -643,7 +713,7 @@ if __name__ == "__main__":
 
     # export slice images as PNGs for DeepSlice / QuickNII
     for slice_number, img in zip(slice_numbers, slice_image_stack):
-        Image.fromarray(img).convert("L").save( os.path.join(output_directory,str(brain_ID + f"_s{slice_number:03d}.png")))
+        Image.fromarray(img).convert("L").save( os.path.join(output_directory,str(args.brain_ID + f"_s{slice_number:03d}.png")))
 
     print("Exporting sample coordinates...")
     # save out sample masks as pixel coordinates
@@ -655,7 +725,7 @@ if __name__ == "__main__":
     for sample_id, row, col in zip(sample_ids, rows, columns):
         sample_data.at[sample_id, "segmentation_row"] = row
         sample_data.at[sample_id, "segmentation_col"] = col
-    sample_data.reset_index().to_csv(args.sample_data, index=False)
+    sample_data.reset_index().to_csv(csv_directory, index=False)
 
 
 
