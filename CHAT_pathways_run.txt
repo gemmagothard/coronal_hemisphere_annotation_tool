@@ -1,0 +1,105 @@
+# make virtual environment 
+
+
+conda create -n chat python=3.8
+conda activate chat
+conda install pytables "statsmodels<=0.13.0" "matplotlib==3.4.2" --yes
+pip install -U allensdk
+pip install deepslice
+pip install openpyxl
+brew install qt5
+brew link qt5 --force
+
+
+
+# navigate to directory:
+
+cd /Users/gemmagothard/Library/CloudStorage/OneDrive-Nexus365/Postdoc/Tracing_experiments/coronal_hemisphere_annotation_tool
+
+# activate virtual envrionment
+conda activate chat
+
+
+
+# image preprocessing - add to excel spreadsheet
+
+python GG_code/preprocessing_metadata.py raw/ metadata.xlsx CBLK1828_1B
+
+
+# image preprocessing - split up images
+
+
+python GG_Code/image_preprocessing.py /path/to/raw/image/directory/ /path/to/image/output/directory/ /path/to/excel/spreadsheet.xsls
+
+python GG_Code/image_preprocessing.py raw/ processed/images/ metadata.xlsx CBLK1828_1B
+
+
+# cell detection - find cells and make csv
+
+python GG_code/cell_detection.py /path/to/csv/output/dir/ /path/to/processed/image/dir/ /path/to/excel/spreadsheet.xsls --slice_thickness brain_ID
+
+python GG_code/cell_detection.py processed/csv/ processed/images/ metadata.xlsx --slice_thickness 70 CBLK1828_1B
+
+
+# image segmentation:
+
+python code/hemisphere_segmentation_and_alignment.py /path/to/image/directory/ /path/to/sample_data.csv /path/to/output/directory/
+
+python GG_code/hemisphere_segmentation_and_alignment.py processed/images/ processed/csv/ segmentation/ CBLK1828_1B --show
+
+MPLBACKEND=Qt5Agg python GG_code/hemisphere_segmentation_and_alignment.py processed/images/ processed/csv/ segmentation/ CBLK1828_1B --show
+
+# need to chance backends (how python interacts with drawing the figures) as some functions don't work on the macOS backend
+
+# run same script but with midlines file:
+
+python GG_code/hemisphere_segmentation_and_alignment.py processed/images/ processed/csv/ segmentation/ CBLK1828_1B --midlines segmentation/CBLK1828_1B/midlines.npy 
+
+
+# image registration
+
+example 
+python code/image_registration.py test/segmentation test/registration brain_ID --slice_direction caudal-rostro --slice_thickness 150
+
+
+python GG_code/image_registration.py segmentation/ registration/ CBLK1828_1B --slice_direction caudal-rostro --slice_thickness 70
+
+
+
+# image annotation with brain atlas
+
+python code/image_annotation.py test/registration/ data/ test/annotation/ CBLK1828_1B
+
+python GG_code/image_annotation.py registration/ allen_brain_data/ annotation/ CBLK1828_1B
+
+
+
+# sample annotation 
+
+python code/sample_annotation.py test/annotation/ test/sample_data.csv brain_ID
+
+python GG_code/sample_annotation.py annotation/ processed/csv/ CBLK1828_1B
+
+
+# make figures
+
+python code/make_figures.py test/segmentation/ test/annotation/ test/sample_data.csv test/figures/ brain_ID
+
+python GG_code/make_figures_GG_version.py segmentation/ annotation/ processed/csv/ figures/ allen_brain_data/ CBLK1828_1B
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
